@@ -1,50 +1,62 @@
-import sys
+import os
 import threading
 import time
 from PIL import Image, ImageDraw, ImageFont
 import pystray
 from ghub import get_battery
 
-POLL_INTERVAL = 30  # seconds
+POLL_INTERVAL = 30
+
+FONTS = [
+    r"C:\Windows\Fonts\arialbd.ttf",
+    r"C:\Windows\Fonts\arial.ttf",
+    r"C:\Windows\Fonts\calibrib.ttf",
+    r"C:\Windows\Fonts\segoeui.ttf",
+]
+
+
+def _font(size):
+    for path in FONTS:
+        if os.path.exists(path):
+            try:
+                return ImageFont.truetype(path, size)
+            except Exception:
+                pass
+    return ImageFont.load_default()
 
 
 def _color(pct):
     if pct is None:
-        return (150, 150, 150)
+        return (90, 90, 90, 220)
     if pct <= 20:
-        return (255, 80, 80)
+        return (210, 50, 50, 230)
     if pct <= 50:
-        return (255, 190, 0)
-    return (80, 220, 80)
+        return (200, 140, 0, 230)
+    return (40, 165, 40, 230)
 
 
-def make_icon(mouse, headset):
-    img = Image.new("RGBA", (64, 64), (28, 28, 28, 230))
+def make_icon(pct, circle=True):
+    img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
-    try:
-        font = ImageFont.truetype("consola.ttf", 18)
-    except Exception:
-        font = ImageFont.load_default()
 
-    m_text = f"M{mouse}" if mouse is not None else "M--"
-    h_text = f"H{headset}" if headset is not None else "H--"
+    if circle:
+        draw.ellipse([2, 2, 62, 62], fill=_color(pct))
+    else:
+        draw.rounded_rectangle([2, 2, 62, 62], radius=10, fill=_color(pct))
 
-    draw.text((4, 6), m_text, fill=_color(mouse), font=font)
-    draw.text((4, 34), h_text, fill=_color(headset), font=font)
+    text = str(pct) if pct is not None else "?"
+    font = _font(30 if len(text) <= 2 else 24)
+    draw.text((32, 32), text, fill=(255, 255, 255), anchor="mm", font=font)
+
     return img
-
-
-def _title(mouse, headset):
-    m = f"{mouse}%" if mouse is not None else "N/A"
-    h = f"{headset}%" if headset is not None else "N/A"
-    return f"Mouse: {m}  |  Headset: {h}"
 
 
 class App:
     def __init__(self):
         self.mouse = None
         self.headset = None
-        self.icon = None
+        self.mouse_icon = None
+        self.headset_icon = None
 
     def refresh(self, _=None):
         try:
@@ -53,40 +65,48 @@ class App:
             self.headset = data["headset"]
         except Exception:
             pass
-        if self.icon:
-            self.icon.icon = make_icon(self.mouse, self.headset)
-            self.icon.title = _title(self.mouse, self.headset)
+        if self.mouse_icon:
+            self.mouse_icon.icon = make_icon(self.mouse, circle=True)
+            self.mouse_icon.title = f"Mouse: {self.mouse}%" if self.mouse is not None else "Mouse: N/A"
+        if self.headset_icon:
+            self.headset_icon.icon = make_icon(self.headset, circle=False)
+            self.headset_icon.title = f"Headset: {self.headset}%" if self.headset is not None else "Headset: N/A"
 
     def _poll(self):
         while True:
             time.sleep(POLL_INTERVAL)
             self.refresh()
 
+    def _quit(self, _=None):
+        if self.mouse_icon:
+            self.mouse_icon.stop()
+        if self.headset_icon:
+            self.headset_icon.stop()
+
     def run(self):
         self.refresh()
         threading.Thread(target=self._poll, daemon=True).start()
 
         menu = pystray.Menu(
-            pystray.MenuItem(
-                lambda _: f"Mouse: {self.mouse}%" if self.mouse is not None else "Mouse: N/A",
-                None, enabled=False,
-            ),
-            pystray.MenuItem(
-                lambda _: f"Headset: {self.headset}%" if self.headset is not None else "Headset: N/A",
-                None, enabled=False,
-            ),
-            pystray.Menu.SEPARATOR,
             pystray.MenuItem("Refresh", self.refresh),
-            pystray.MenuItem("Quit", lambda _: self.icon.stop()),
+            pystray.MenuItem("Quit", self._quit),
         )
 
-        self.icon = pystray.Icon(
-            "ghub-battery",
-            make_icon(self.mouse, self.headset),
-            _title(self.mouse, self.headset),
+        self.mouse_icon = pystray.Icon(
+            "ghub-mouse",
+            make_icon(self.mouse, circle=True),
+            f"Mouse: {self.mouse}%" if self.mouse is not None else "Mouse: N/A",
             menu=menu,
         )
-        self.icon.run()
+        self.headset_icon = pystray.Icon(
+            "ghub-headset",
+            make_icon(self.headset, circle=False),
+            f"Headset: {self.headset}%" if self.headset is not None else "Headset: N/A",
+            menu=menu,
+        )
+
+        self.mouse_icon.run_detached()
+        self.headset_icon.run()
 
 
 if __name__ == "__main__":
