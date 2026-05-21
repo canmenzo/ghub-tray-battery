@@ -1,42 +1,43 @@
 import json
-import uuid
-import websocket
+import os
+import shutil
+import sqlite3
 
-WS_URL = "ws://localhost:9010"
+DB_SRC = os.path.join(os.environ["LOCALAPPDATA"], "LGHUB", "settings.db")
+TMP_BASE = os.path.join(os.environ.get("TEMP", "."), "lghub_battery_tmp")
 
 
 def get_battery():
-    """Returns {"mouse": int|None, "headset": int|None} from G HUB local API."""
-    ws = websocket.create_connection(WS_URL, timeout=5)
+    """Returns {"mouse": int|None, "headset": int|None} from G HUB settings.db."""
+    # Copy DB + WAL so sqlite3 sees a consistent, up-to-date snapshot
+    for ext in ("", "-shm", "-wal"):
+        src = DB_SRC + ext
+        if os.path.exists(src):
+            shutil.copy2(src, TMP_BASE + ".db" + ext)
+
+    conn = sqlite3.connect(TMP_BASE + ".db")
     try:
-        msg_id = str(uuid.uuid4())
-        ws.send(json.dumps({"msgid": msg_id, "verb": "GET", "path": "/devices/list"}))
-        # API may push unsolicited messages first; loop until we get the right one
-        for _ in range(10):
-            raw = ws.recv()
-            resp = json.loads(raw)
-            if resp.get("msgid") == msg_id or resp.get("path") == "/devices/list":
-                return _parse(resp)
+        row = conn.execute("SELECT file FROM data LIMIT 1").fetchone()
+        data = json.loads(row[0])
     finally:
-        ws.close()
-    return {"mouse": None, "headset": None}
+        conn.close()
+
+    return _parse(data)
 
 
-def _parse(resp):
+def _parse(data):
+    # Keys are flat: "battery/<device>/percentage" → {"percentage": int, "time": ...}
     result = {"mouse": None, "headset": None}
-    devices = (
-        resp.get("payload", {}).get("deviceList", [])
-        or resp.get("payload", {}).get("devices", [])
-        or resp.get("devices", [])
-    )
-    for dev in devices:
-        dtype = (dev.get("deviceType") or dev.get("type") or dev.get("category") or "").lower()
-        battery = dev.get("batteryInfo") or dev.get("battery") or {}
-        pct = battery.get("percentage") if isinstance(battery, dict) else None
+    for key, val in data.items():
+        parts = key.split("/")
+        if len(parts) != 3 or parts[0] != "battery" or parts[2] != "percentage":
+            continue
+        pct = val.get("percentage") if isinstance(val, dict) else None
         if pct is None:
             continue
-        if "mouse" in dtype and result["mouse"] is None:
+        device = parts[1].lower()
+        if "mouse" in device and result["mouse"] is None:
             result["mouse"] = int(pct)
-        elif ("headset" in dtype or "audio" in dtype) and result["headset"] is None:
+        elif ("headset" in device or "headphone" in device) and result["headset"] is None:
             result["headset"] = int(pct)
     return result
